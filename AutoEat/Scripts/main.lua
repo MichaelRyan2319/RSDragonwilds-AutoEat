@@ -227,14 +227,19 @@ local function ScanBag(bag)
     return list, byPath
 end
 
--- Current and full value of the hunger or thirst bar.
+-- Current and full value of the hunger or thirst bar, or nothing when the pawn has none (the
+-- player is controlling something that isn't their character).
 local function Level(kind, pawn)
-    if kind == "food" then
-        local c = pawn.SustenanceComponent
-        return c.CurrentSustenance, c.CurrentMaxSustenance
-    end
-    local c = pawn.HydrationComponent
-    return c.CurrentHydration, c.CurrentMaxHydration
+    local ok, level, full = pcall(function()
+        if kind == "food" then
+            local c = pawn.SustenanceComponent
+            return c.CurrentSustenance, c.CurrentMaxSustenance
+        end
+        local c = pawn.HydrationComponent
+        return c.CurrentHydration, c.CurrentMaxHydration
+    end)
+    if ok and type(level) == "number" and type(full) == "number" then return level, full end
+    return nil, nil
 end
 
 ------------------------------------------------------------------ settings (per character)
@@ -321,7 +326,9 @@ local function CheckHunger(now, pc)
         local level = Level(pending.kind, pawn)
         local entry = byPath[pending.path]
         local count = entry and entry.count or 0
-        if level > pending.level + 0.5 or count < pending.count then
+        if level == nil then
+            -- The bar can't be read right now; neither a hit nor a miss.
+        elseif level > pending.level + 0.5 or count < pending.count then
             misses[pending.kind] = 0
         else
             -- The game refused (riding, in a menu, mid-fight...). Try again later, and wait
@@ -650,6 +657,27 @@ local function BuildChoice(tree, row, kind)
     return choice
 end
 
+-- The game marks its chosen tab twice: the tab's check box is checked (the gold picture), and
+-- its SelectionImage is shown (the gold line under it).
+local function MarkNative(button, chosen)
+    local box = button.RadioCheckBox
+    if box:IsChecked() ~= chosen then box:SetIsChecked(chosen) end
+    local line = button.SelectionImage
+    if Valid(line) then
+        local want = chosen and SELF_HIT_TEST_INVISIBLE or COLLAPSED
+        if line:GetVisibility() ~= want then line:SetVisibility(want) end
+    end
+end
+
+-- Removes what an earlier copy of this mod added to a panel. UE4SS can restart its mods while
+-- the game runs; the widgets the old copy made stay in the game's screen when it does.
+local function RemoveLeftovers(panel)
+    for i = panel:GetChildrenCount(), 1, -1 do
+        local child = panel:GetChildAt(i - 1)
+        if Valid(child) and child:GetFName():ToString():sub(1, 3) == "AE_" then child:RemoveFromParent() end
+    end
+end
+
 local function BuildUi(content)
     local tree = content.WidgetTree
     local group = content.CategoryButtonGroup
@@ -662,12 +690,22 @@ local function BuildUi(content)
     if not (Asset(TEX_TAB) and Asset(MAT_SLOT)) then return nil end
 
     local built = { content = content, group = group, scroll = scroll, active = false, natives = {}, cells = {}, choices = {} }
+    shownText = {}   -- the old screen's texts are gone, and their addresses get used again
 
     for i = 1, group:GetChildrenCount() do
         local button = group:GetChildAt(i - 1)
         if Valid(button) and Valid(button.RadioCheckBox) then built.natives[#built.natives + 1] = button end
     end
     if #built.natives == 0 then return nil end
+
+    RemoveLeftovers(group)
+    RemoveLeftovers(holder)
+    if scroll:GetVisibility() == HIDDEN then
+        -- An earlier copy had its page open. Put the game's page and its tab's marks back.
+        scroll:SetVisibility(VISIBLE)
+        local shown = content.InventorySwitcher:GetActiveWidgetIndex()
+        for _, button in ipairs(built.natives) do MarkNative(button, button.RadioValue == shown) end
+    end
 
     -- The tab goes after the game's last one, overlapping it the way the game's overlap.
     built.tab = BuildTab(tree)
@@ -732,28 +770,21 @@ local function FindUi(now)
     end
 end
 
-local function InventoryOpen(pc)
+local nextApiSearch = 0
+local function InventoryOpen(pc, now)
     if not Valid(inputApi) then
         inputApi = nil
-        for _, api in ipairs(FindAllOf("InputManagerUIAPI") or {}) do
-            if Valid(api) and not api:GetFullName():find("Default__", 1, true) then inputApi = api end
+        if now >= nextApiSearch then
+            nextApiSearch = now + 3
+            for _, api in ipairs(FindAllOf("InputManagerUIAPI") or {}) do
+                if Valid(api) and not api:GetFullName():find("Default__", 1, true) then inputApi = api end
+            end
         end
     end
+    -- Without it the tab is simply looked at all the time.
     if not inputApi then return true end
     local ok, open = pcall(function() return inputApi:IsOpen(pc, WIDGET_INVENTORY) end)
     return (not ok) or open == true
-end
-
--- The game marks its chosen tab twice: the tab's check box is checked (the gold picture), and
--- its SelectionImage is shown (the gold line under it).
-local function MarkNative(button, chosen)
-    local box = button.RadioCheckBox
-    if box:IsChecked() ~= chosen then box:SetIsChecked(chosen) end
-    local line = button.SelectionImage
-    if Valid(line) then
-        local want = chosen and SELF_HIT_TEST_INVISIBLE or COLLAPSED
-        if line:GetVisibility() ~= want then line:SetVisibility(want) end
-    end
 end
 
 local function SetActive(active)
@@ -908,7 +939,7 @@ local function UpdatePage(now, pc)
 end
 
 local function UpdateUi(now, pc)
-    if not InventoryOpen(pc) then return end
+    if not InventoryOpen(pc, now) then return end
 
     local tabChecked = ui.tab.click:IsChecked() == true
     if not ui.active then
@@ -933,8 +964,11 @@ end
 ------------------------------------------------------------------ the loop
 
 local nextCheck = 0
+local stopped = false
 
 local function Tick()
+    -- A loop that has been cancelled can still have one call waiting to run.
+    if stopped then return end
     local pc = Controller()
     if not pc then return end
     local now = os.clock()
@@ -973,6 +1007,7 @@ function AutoEatStatus()
 end
 
 function AutoEatShutdown()
+    stopped = true
     if AutoEatLoop then pcall(CancelDelayedAction, AutoEatLoop) end
     AutoEatLoop = nil
     pcall(RemoveUi)
