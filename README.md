@@ -96,7 +96,7 @@ the game.
 | `DrinkAt` | `50` | The "drink at" level a new character starts with, in percent |
 | `CheckSeconds` | `2` | How often hunger and thirst are checked |
 | `SettleSeconds` | `6` | How long the mod waits after using an item before it checks whether that worked |
-| `PollMs` | `100` | How often the open inventory is checked for clicks on the tab, in milliseconds |
+| `PollMs` | `50` | How often the inventory screen is checked, in milliseconds: for clicks on the tab, and for the inventory closing while the tab is on show |
 | `DebugLogging` | `false` | Extra lines in `UE4SS.log` |
 
 Each character's choices are in `Win64\ue4ss\Mods\AutoEat\saved_<character id>.txt`.
@@ -115,12 +115,18 @@ The mod writes that file; updates don't touch it.
 - After using an item the mod waits a few seconds, then looks whether the bar
   went up or the stack went down. If neither happened the game refused, and the
   mod waits 15 seconds before trying that slot again, then 30, 60 and 120.
-- The tab is a check box added to the game's tab row, drawn with the game's
-  hunger icon. The page is added next to the four item pages and shown in their
+- The tab is added to the game's tab row: a box in the colours of the game's
+  four, with the game's hunger icon and the gold line the game draws under its
+  chosen tab. The page is added next to the four item pages and shown in their
   place while the tab is chosen. Clicking any of the game's tabs brings its
   page back.
-- Everything clickable on the page is a check box as well. A click flips it,
-  and the mod looks ten times a second for flipped boxes, so no click is lost.
+- The slots are drawn with the material the game draws its own inventory slots
+  with (`MI_Item_Selected`), so they look and light up the same.
+- Everything clickable is an invisible check box. A click flips it, and the mod
+  looks twenty times a second for flipped boxes, so no click is lost.
+- The inventory screen is never taken down: closed, it is the hotbar, and the
+  game hides the rest of it piece by piece. The mod's page follows the game's
+  tab row, so it hides and fades with the inventory.
 - The mod only reads the game's data and calls the one "use item" function. It
   writes nothing to your save.
 

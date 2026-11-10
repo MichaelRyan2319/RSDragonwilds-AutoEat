@@ -22,14 +22,11 @@ if AutoEatShutdown then pcall(AutoEatShutdown) end
 -- ESlateVisibility
 local VISIBLE, COLLAPSED, HIDDEN, HIT_TEST_INVISIBLE, SELF_HIT_TEST_INVISIBLE = 0, 1, 2, 3, 4
 -- EHorizontalAlignment / EVerticalAlignment (0 is Fill)
-local FILL, CENTER, RIGHT, BOTTOM = 0, 2, 3, 3
+local FILL, LEFT, CENTER, RIGHT, BOTTOM = 0, 1, 2, 3, 3
 -- ESlateSizeRule
 local SIZE_FILL = 1
 -- ESlateBrushDrawType
 local DRAW_NONE = 0
--- EWidgetType::Inventory
-local WIDGET_INVENTORY = 11
-
 local ART = "/Game/Art/UI/"
 local TEX_FOOD = ART .. "HUD/Survival_Core/Upkeep/T_Icon_Upkeep_Sustenance.T_Icon_Upkeep_Sustenance"
 local TEX_DRINK = ART .. "HUD/Survival_Core/Upkeep/T_Icon_Upkeep_Hydration.T_Icon_Upkeep_Hydration"
@@ -63,7 +60,7 @@ end
 local TAB_LOOKS = {
     normal = { fill = Screen(46, 44, 43), edge = Screen(62, 59, 52), icon = Screen(150, 150, 148) },
     hover = { fill = Screen(38, 36, 36), edge = Screen(52, 49, 44), icon = Screen(125, 125, 123) },
-    chosen = { fill = Screen(112, 90, 58), edge = Screen(172, 152, 92), icon = Screen(232, 214, 176) },
+    chosen = { fill = Screen(108, 87, 56), edge = Screen(168, 148, 90), icon = Screen(206, 190, 156) },
 }
 
 -- The game's inventory slots are 60 wide and 66 high, 8 to a row, with these gaps around each.
@@ -574,7 +571,6 @@ end
 ------------------------------------------------------------------ the tab
 
 local ui = nil          -- everything this mod added to the open character's inventory screen
-local inputApi = nil    -- the game's own "is this menu open" object
 
 local function UiValid()
     return ui ~= nil and Valid(ui.content) and Valid(ui.tab.root) and Valid(ui.page)
@@ -682,24 +678,25 @@ local function BuildUi(content)
     local tree = content.WidgetTree
     local group = content.CategoryButtonGroup
     local scroll = content.ScrollBox_0
-    if not (Valid(tree) and Valid(group) and Valid(scroll)) then return nil end
+    local strip = content.TabGroupOverlay
+    if not (Valid(tree) and Valid(group) and Valid(scroll) and Valid(strip)) then return nil end
     -- The four pages sit in a scroll box, in a size box, in an overlay. This mod's page goes
     -- into that overlay, on top, and takes the scroll box's place while its tab is chosen.
     local holder = scroll:GetParent():GetParent()
     if not Valid(holder) or holder:GetClass():GetFName():ToString() ~= "Overlay" then return nil end
     if not (Asset(TEX_TAB) and Asset(MAT_SLOT)) then return nil end
 
-    local built = { content = content, group = group, scroll = scroll, active = false, natives = {}, cells = {}, choices = {} }
+    local built = { content = content, group = group, scroll = scroll, strip = strip, active = false, natives = {}, cells = {}, choices = {} }
     shownText = {}   -- the old screen's texts are gone, and their addresses get used again
 
+    RemoveLeftovers(group)
+    RemoveLeftovers(holder)
     for i = 1, group:GetChildrenCount() do
         local button = group:GetChildAt(i - 1)
         if Valid(button) and Valid(button.RadioCheckBox) then built.natives[#built.natives + 1] = button end
     end
     if #built.natives == 0 then return nil end
 
-    RemoveLeftovers(group)
-    RemoveLeftovers(holder)
     if scroll:GetVisibility() == HIDDEN then
         -- An earlier copy had its page open. Put the game's page and its tab's marks back.
         scroll:SetVisibility(VISIBLE)
@@ -742,9 +739,10 @@ local function BuildUi(content)
         page:AddChildToVerticalBox(line)
         for _ = 1, GRID_COLUMNS do
             local cell = ItemSlot(tree)
-            local cellSlot = line:AddChildToHorizontalBox(Sized(tree, cell.root, nil, SLOT_H))
+            local cellSlot = line:AddChildToHorizontalBox(Sized(tree, cell.root, SLOT_W, SLOT_H))
             cellSlot:SetSize({ Value = 1, SizeRule = SIZE_FILL })
             cellSlot:SetPadding(SLOT_PAD)
+            cellSlot:SetHorizontalAlignment(LEFT)
             built.cells[#built.cells + 1] = cell
         end
     end
@@ -770,26 +768,10 @@ local function FindUi(now)
     end
 end
 
-local nextApiSearch = 0
-local function InventoryOpen(pc, now)
-    if not Valid(inputApi) then
-        inputApi = nil
-        if now >= nextApiSearch then
-            nextApiSearch = now + 3
-            for _, api in ipairs(FindAllOf("InputManagerUIAPI") or {}) do
-                if Valid(api) and not api:GetFullName():find("Default__", 1, true) then inputApi = api end
-            end
-        end
-    end
-    -- Without it the tab is simply looked at all the time.
-    if not inputApi then return true end
-    local ok, open = pcall(function() return inputApi:IsOpen(pc, WIDGET_INVENTORY) end)
-    return (not ok) or open == true
-end
-
 local function SetActive(active)
     ui.active = active
-    Show(ui.page, active, SELF_HIT_TEST_INVISIBLE)
+    -- UpdateUi shows the page; it knows whether the inventory is open.
+    if not active then Show(ui.page, false) end
     -- Hidden, not collapsed: the scroll box still holds the page's place and size.
     local want = active and HIDDEN or VISIBLE
     if ui.scroll:GetVisibility() ~= want then ui.scroll:SetVisibility(want) end
@@ -912,7 +894,7 @@ local function UpdatePage(now, pc)
         if entry then
             local chosen = Settings[entry.kind] == entry.path
             local hovered = cell.click:IsHovered() == true
-            FillSlot(cell, entry, chosen or hovered)
+            FillSlot(cell, entry, hovered)
             if hovered then
                 local slotName = KINDS[entry.kind].title:lower()
                 if chosen then
@@ -939,7 +921,20 @@ local function UpdatePage(now, pc)
 end
 
 local function UpdateUi(now, pc)
-    if not InventoryOpen(pc, now) then return end
+    -- The inventory screen is always up: closed, it is the hotbar, and the game has hidden the
+    -- rest of it piece by piece. This mod's page isn't one of the game's pieces, so it follows
+    -- the tab row, which the game hides and fades with the others.
+    local open = ui.strip:GetVisibility() ~= COLLAPSED and ui.strip:GetVisibility() ~= HIDDEN
+    Show(ui.page, ui.active and open, SELF_HIT_TEST_INVISIBLE)
+    if not open then return end
+    if ui.active then
+        local opacity = ui.strip:GetRenderOpacity()
+        if ui.opacity ~= opacity then
+            ui.opacity = opacity
+            ui.page:SetRenderOpacity(opacity)
+        end
+        if ui.scroll:GetVisibility() ~= HIDDEN then ui.scroll:SetVisibility(HIDDEN) end
+    end
 
     local tabChecked = ui.tab.click:IsChecked() == true
     if not ui.active then

@@ -16,8 +16,9 @@ return {
     -- Eating and drinking take a few seconds in the game.
     SettleSeconds = 6,
 
-    -- How often the open inventory is checked for clicks on the Auto Eat tab, in milliseconds.
-    PollMs = 100,
+    -- How often the inventory screen is checked, in milliseconds: for clicks on the Auto Eat
+    -- tab, and for the inventory closing while the tab is on show.
+    PollMs = 50,
 
     -- Extra lines in UE4SS.log.
     DebugLogging = false,
